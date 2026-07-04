@@ -16,6 +16,7 @@ type JoinResponse =
   | {
       cursor: number;
       peerPresent: boolean;
+      sharingActive: boolean;
       role: Role;
       roomFull: false;
     }
@@ -30,6 +31,7 @@ type JoinResponse =
 type PollResponse = {
   events: RoomEvent[];
   peerPresent: boolean;
+  sharingActive: boolean;
 };
 
 type ResolutionOption = {
@@ -357,6 +359,7 @@ export function RoomClient({
   const [peerPresent, setPeerPresent] = useState(false);
   const [localSharing, setLocalSharing] = useState(false);
   const [remoteViewing, setRemoteViewing] = useState(false);
+  const [sharingActive, setSharingActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [roomFull, setRoomFull] = useState(false);
   const [browserSupported, setBrowserSupported] = useState(true);
@@ -394,6 +397,10 @@ export function RoomClient({
 
     peerPresentRef.current = value;
     setPeerPresent(value);
+  };
+
+  const updateSharingActive = (value: boolean): void => {
+    setSharingActive((currentValue) => (currentValue === value ? currentValue : value));
   };
 
   const updateRole = (value: Role | null): void => {
@@ -457,6 +464,20 @@ export function RoomClient({
         clientId: clientIdRef.current,
         payload,
         type,
+      }),
+      method: "POST",
+    });
+  };
+
+  const postSharingState = async (active: boolean): Promise<void> => {
+    if (!clientIdRef.current) {
+      return;
+    }
+
+    await requestJson<{ ok: true }>(`/api/rooms/${roomId}/sharing`, {
+      body: JSON.stringify({
+        active,
+        clientId: clientIdRef.current,
       }),
       method: "POST",
     });
@@ -568,6 +589,7 @@ export function RoomClient({
   };
 
   const stopSharing = (): void => {
+    void postSharingState(false).catch(() => undefined);
     cleanupPeerConnection();
     stopStream(localStreamRef.current);
     localStreamRef.current = null;
@@ -577,6 +599,7 @@ export function RoomClient({
     }
 
     setLocalSharing(false);
+    updateSharingActive(false);
     setError(null);
   };
 
@@ -595,6 +618,7 @@ export function RoomClient({
 
       localStreamRef.current = stream;
       setLocalSharing(true);
+      updateSharingActive(true);
       setError(null);
 
       syncLocalPreview();
@@ -611,6 +635,8 @@ export function RoomClient({
       if (peerPresentRef.current) {
         await beginHostOffer();
       }
+
+      await postSharingState(true);
     } catch (caughtError) {
       setNegotiationActive(false);
       const message =
@@ -873,6 +899,7 @@ export function RoomClient({
           latestEventIdRef.current = joinResult.cursor;
           updateRole(joinResult.role);
           updatePeerPresent(joinResult.peerPresent);
+          updateSharingActive(joinResult.sharingActive);
           setError(null);
           break;
         } catch {
@@ -893,6 +920,7 @@ export function RoomClient({
 
           updateSignalingConnected(true);
           updatePeerPresent(pollResult.peerPresent);
+          updateSharingActive(pollResult.sharingActive);
 
           for (const event of pollResult.events) {
             latestEventIdRef.current = Math.max(latestEventIdRef.current, event.id);
@@ -950,6 +978,7 @@ export function RoomClient({
       }
 
       setLocalSharing(false);
+      updateSharingActive(false);
       cleanupPeerConnection();
       stopStream(localStreamRef.current);
       localStreamRef.current = null;
@@ -973,6 +1002,10 @@ export function RoomClient({
       return "Watching live";
     }
 
+    if (role === "viewer" && sharingActive) {
+      return "Partner is sharing";
+    }
+
     if (role === "viewer" && peerPresent) {
       return "Connected, waiting for share";
     }
@@ -990,7 +1023,9 @@ export function RoomClient({
   const showViewerVideo = remoteViewing;
   const viewerToastMessage = !showViewerVideo
     ? role === "viewer"
-      ? "Waiting for your partner to start sharing."
+      ? sharingActive
+        ? "Your partner is sharing. Connecting the stream..."
+        : "Waiting for your partner to start sharing."
       : "The stream will appear here once sharing starts."
     : null;
 
@@ -1042,7 +1077,7 @@ export function RoomClient({
           </div>
           <div className="info-tile">
             <span className="tile-label">Sharing</span>
-            <strong>{localSharing || remoteViewing ? "Live" : "Idle"}</strong>
+            <strong>{localSharing || remoteViewing || sharingActive ? "Live" : "Idle"}</strong>
           </div>
         </div>
 

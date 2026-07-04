@@ -14,6 +14,7 @@ type JoinResult =
   | {
       cursor: number;
       peerPresent: boolean;
+      sharingActive: boolean;
       role: RoomRole;
       roomFull: false;
     }
@@ -28,11 +29,13 @@ type JoinResult =
 type PollResult = {
   events: SignalEvent[];
   peerPresent: boolean;
+  sharingActive: boolean;
 };
 
 type RoomState = {
   events: SignalEvent[];
   hostClientId?: string;
+  hostSharingActive: boolean;
   nextEventId: number;
   viewerClientId?: string;
 };
@@ -51,6 +54,7 @@ type RoomStore = {
   ) => Promise<JoinResult>;
   leaveRoom: (roomId: string, clientId: string) => Promise<void>;
   pollEvents: (roomId: string, clientId: string, cursor: number) => Promise<PollResult>;
+  setSharingActive: (roomId: string, clientId: string, active: boolean) => Promise<void>;
 };
 
 const ROOM_TTL_SECONDS = 60 * 15;
@@ -79,6 +83,7 @@ function getPeerPresent(state: RoomState, role: RoomRole): boolean {
 function createEmptyRoomState(): RoomState {
   return {
     events: [],
+    hostSharingActive: false,
     nextEventId: 1,
   };
 }
@@ -192,9 +197,12 @@ async function pushRedisEvent(roomId: string, event: Omit<SignalEvent, "id">): P
 
 async function loadRedisRoomState(roomId: string): Promise<RoomState> {
   const prefix = getRoomKeyPrefix(roomId);
-  const [hostResult, viewerResult, eventsResult] = await executeRedisPipeline<string | string[]>([
+  const [hostResult, viewerResult, sharingResult, eventsResult] = await executeRedisPipeline<
+    string | string[]
+  >([
     ["GET", `${prefix}:host`],
     ["GET", `${prefix}:viewer`],
+    ["GET", `${prefix}:sharing-active`],
     ["LRANGE", `${prefix}:events`, 0, -1],
   ]);
 
@@ -202,6 +210,7 @@ async function loadRedisRoomState(roomId: string): Promise<RoomState> {
 
   return {
     hostClientId: typeof hostResult.result === "string" ? hostResult.result : undefined,
+    hostSharingActive: sharingResult.result === "1",
     viewerClientId: typeof viewerResult.result === "string" ? viewerResult.result : undefined,
     events: serializedEvents
       .map((value) => {
@@ -260,6 +269,7 @@ const memoryRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: !!room.viewerClientId,
+        sharingActive: room.hostSharingActive,
         role: "host",
         roomFull: false,
       };
@@ -270,6 +280,7 @@ const memoryRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: !!room.hostClientId,
+        sharingActive: room.hostSharingActive,
         role: "viewer",
         roomFull: false,
       };
@@ -294,6 +305,7 @@ const memoryRoomStore: RoomStore = {
         return {
           cursor: getLatestEventCursor(room.events),
           peerPresent: !!room[peerRoleKey],
+          sharingActive: room.hostSharingActive,
           role: preferredRole,
           roomFull: false,
         };
@@ -311,6 +323,7 @@ const memoryRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: !!room.viewerClientId,
+        sharingActive: room.hostSharingActive,
         role: "host",
         roomFull: false,
       };
@@ -328,6 +341,7 @@ const memoryRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: true,
+        sharingActive: room.hostSharingActive,
         role: "viewer",
         roomFull: false,
       };
@@ -350,6 +364,7 @@ const memoryRoomStore: RoomStore = {
 
     if (role === "host") {
       room.hostClientId = undefined;
+      room.hostSharingActive = false;
       if (room.viewerClientId) {
         room.events.push({
           id: room.nextEventId++,
@@ -383,18 +398,30 @@ const memoryRoomStore: RoomStore = {
     const room = rooms.get(roomId);
 
     if (!room) {
-      return { events: [], peerPresent: false };
+      return { events: [], peerPresent: false, sharingActive: false };
     }
 
     const role = getRoleForClient(room, clientId);
     if (!role) {
-      return { events: [], peerPresent: false };
+      return { events: [], peerPresent: false, sharingActive: room.hostSharingActive };
     }
 
     return {
       events: room.events.filter((event) => event.id > cursor && event.to === role),
       peerPresent: getPeerPresent(room, role),
+      sharingActive: room.hostSharingActive,
     };
+  },
+
+  async setSharingActive(roomId, clientId, active) {
+    const rooms = getGlobalMemoryStore();
+    const room = rooms.get(roomId);
+    if (!room || room.hostClientId !== clientId) {
+      return;
+    }
+
+    room.hostSharingActive = active;
+    rooms.set(roomId, room);
   },
 };
 
@@ -442,6 +469,7 @@ const redisRoomStore: RoomStore = {
         return {
           cursor: getLatestEventCursor(room.events),
           peerPresent: getPeerPresent(room, preferredRole),
+          sharingActive: room.hostSharingActive,
           role: preferredRole,
           roomFull: false,
         };
@@ -457,6 +485,7 @@ const redisRoomStore: RoomStore = {
         return {
           cursor: getLatestEventCursor(room.events),
           peerPresent: getPeerPresent(room, preferredRole),
+          sharingActive: room.hostSharingActive,
           role: preferredRole,
           roomFull: false,
         };
@@ -482,6 +511,7 @@ const redisRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: !!room.viewerClientId,
+        sharingActive: room.hostSharingActive,
         role: "host",
         roomFull: false,
       };
@@ -494,6 +524,7 @@ const redisRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: !!room.viewerClientId,
+        sharingActive: room.hostSharingActive,
         role: "host",
         roomFull: false,
       };
@@ -517,6 +548,7 @@ const redisRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: true,
+        sharingActive: room.hostSharingActive,
         role: "viewer",
         roomFull: false,
       };
@@ -529,6 +561,7 @@ const redisRoomStore: RoomStore = {
       return {
         cursor: getLatestEventCursor(room.events),
         peerPresent: !!room.hostClientId,
+        sharingActive: room.hostSharingActive,
         role: "viewer",
         roomFull: false,
       };
@@ -564,6 +597,7 @@ const redisRoomStore: RoomStore = {
 
     if (role === "host" && !room.viewerClientId) {
       await executeRedisPipeline([
+        ["DEL", `${prefix}:sharing-active`],
         ["DEL", `${prefix}:events`],
         ["DEL", `${prefix}:event-seq`],
       ]);
@@ -571,6 +605,7 @@ const redisRoomStore: RoomStore = {
 
     if (role === "viewer" && !room.hostClientId) {
       await executeRedisPipeline([
+        ["DEL", `${prefix}:sharing-active`],
         ["DEL", `${prefix}:events`],
         ["DEL", `${prefix}:event-seq`],
       ]);
@@ -581,7 +616,7 @@ const redisRoomStore: RoomStore = {
     const room = await loadRedisRoomState(roomId);
     const role = getRoleForClient(room, clientId);
     if (!role) {
-      return { events: [], peerPresent: false };
+      return { events: [], peerPresent: false, sharingActive: room.hostSharingActive };
     }
 
     await touchRedisMembership(roomId, role, clientId);
@@ -589,7 +624,24 @@ const redisRoomStore: RoomStore = {
     return {
       events: room.events.filter((event) => event.id > cursor && event.to === role),
       peerPresent: getPeerPresent(room, role),
+      sharingActive: room.hostSharingActive,
     };
+  },
+
+  async setSharingActive(roomId, clientId, active) {
+    const prefix = getRoomKeyPrefix(roomId);
+    const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
+    if (currentHost !== clientId) {
+      return;
+    }
+
+    await executeRedisCommand([
+      "SET",
+      `${prefix}:sharing-active`,
+      active ? "1" : "0",
+      "EX",
+      ROOM_TTL_SECONDS,
+    ]);
   },
 };
 

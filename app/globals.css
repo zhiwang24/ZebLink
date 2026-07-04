@@ -403,12 +403,14 @@ select.share-link {
   background: rgba(8, 18, 34, 0.86);
   border: 1px solid rgba(184, 217, 255, 0.14);
   border-radius: 999px;
-  bottom: 18px;
-  color: var(--text);
-  left: 18px;
-  max-width: calc(100% - 36px);
+  left: 50%;
+  max-width: min(80%, 420px);
   padding: 10px 14px;
+  color: var(--text);
   position: absolute;
+  text-align: center;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .actions {
