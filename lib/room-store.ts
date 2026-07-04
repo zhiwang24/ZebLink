@@ -35,26 +35,40 @@ type PollResult = {
 type RoomState = {
   events: SignalEvent[];
   hostClientId?: string;
+  hostConnectionId?: string;
   hostSharingActive: boolean;
   nextEventId: number;
   viewerClientId?: string;
+  viewerConnectionId?: string;
 };
 
 type RoomStore = {
   emitSignal: (
     roomId: string,
     clientId: string,
+    connectionId: string,
     type: Exclude<SignalEventType, "user-joined" | "user-left">,
     payload: RTCIceCandidateInit | RTCSessionDescriptionInit,
   ) => Promise<void>;
   joinRoom: (
     roomId: string,
     clientId: string,
+    connectionId: string,
     preferredRole: PreferredRoomRole,
   ) => Promise<JoinResult>;
-  leaveRoom: (roomId: string, clientId: string) => Promise<void>;
-  pollEvents: (roomId: string, clientId: string, cursor: number) => Promise<PollResult>;
-  setSharingActive: (roomId: string, clientId: string, active: boolean) => Promise<void>;
+  leaveRoom: (roomId: string, clientId: string, connectionId: string) => Promise<void>;
+  pollEvents: (
+    roomId: string,
+    clientId: string,
+    connectionId: string,
+    cursor: number,
+  ) => Promise<PollResult>;
+  setSharingActive: (
+    roomId: string,
+    clientId: string,
+    connectionId: string,
+    active: boolean,
+  ) => Promise<void>;
 };
 
 const ROOM_TTL_SECONDS = 60 * 15;
@@ -64,12 +78,25 @@ function getPeerRole(role: RoomRole): RoomRole {
   return role === "host" ? "viewer" : "host";
 }
 
-function getRoleForClient(state: RoomState, clientId: string): RoomRole | null {
-  if (state.hostClientId === clientId) {
+function matchesMembership(
+  storedClientId: string | undefined,
+  storedConnectionId: string | undefined,
+  clientId: string,
+  connectionId: string,
+): boolean {
+  if (storedClientId !== clientId) {
+    return false;
+  }
+
+  return !storedConnectionId || storedConnectionId === connectionId;
+}
+
+function getRoleForClient(state: RoomState, clientId: string, connectionId: string): RoomRole | null {
+  if (matchesMembership(state.hostClientId, state.hostConnectionId, clientId, connectionId)) {
     return "host";
   }
 
-  if (state.viewerClientId === clientId) {
+  if (matchesMembership(state.viewerClientId, state.viewerConnectionId, clientId, connectionId)) {
     return "viewer";
   }
 
@@ -206,11 +233,20 @@ async function pushRedisEvent(roomId: string, event: Omit<SignalEvent, "id">): P
 
 async function loadRedisRoomState(roomId: string): Promise<RoomState> {
   const prefix = getRoomKeyPrefix(roomId);
-  const [hostResult, viewerResult, sharingResult, eventsResult] = await executeRedisPipeline<
+  const [
+    hostResult,
+    hostConnectionResult,
+    viewerResult,
+    viewerConnectionResult,
+    sharingResult,
+    eventsResult,
+  ] = await executeRedisPipeline<
     string | string[]
   >([
     ["GET", `${prefix}:host`],
+    ["GET", `${prefix}:host:connection`],
     ["GET", `${prefix}:viewer`],
+    ["GET", `${prefix}:viewer:connection`],
     ["GET", `${prefix}:sharing-active`],
     ["LRANGE", `${prefix}:events`, 0, -1],
   ]);
@@ -219,8 +255,14 @@ async function loadRedisRoomState(roomId: string): Promise<RoomState> {
 
   return {
     hostClientId: typeof hostResult.result === "string" ? hostResult.result : undefined,
+    hostConnectionId:
+      typeof hostConnectionResult.result === "string" ? hostConnectionResult.result : undefined,
     hostSharingActive: sharingResult.result === "1",
     viewerClientId: typeof viewerResult.result === "string" ? viewerResult.result : undefined,
+    viewerConnectionId:
+      typeof viewerConnectionResult.result === "string"
+        ? viewerConnectionResult.result
+        : undefined,
     events: serializedEvents
       .map((value) => {
         try {
@@ -234,18 +276,39 @@ async function loadRedisRoomState(roomId: string): Promise<RoomState> {
   };
 }
 
-async function touchRedisMembership(roomId: string, role: RoomRole, clientId: string): Promise<void> {
+function getConnectionKey(prefix: string, role: RoomRole): string {
+  return `${prefix}:${role}:connection`;
+}
+
+async function touchRedisMembership(
+  roomId: string,
+  role: RoomRole,
+  clientId: string,
+  connectionId: string,
+): Promise<void> {
   const prefix = getRoomKeyPrefix(roomId);
   const key = `${prefix}:${role}`;
-  const storedClientId = await executeRedisCommand<string | null>(["GET", key]);
+  const connectionKey = getConnectionKey(prefix, role);
+  const [storedClientIdResult, storedConnectionIdResult] = await executeRedisPipeline<string>([
+    ["GET", key],
+    ["GET", connectionKey],
+  ]);
+  const storedClientId =
+    typeof storedClientIdResult.result === "string" ? storedClientIdResult.result : null;
+  const storedConnectionId =
+    typeof storedConnectionIdResult.result === "string" ? storedConnectionIdResult.result : null;
 
-  if (storedClientId === clientId) {
-    await executeRedisCommand(["EXPIRE", key, ROOM_TTL_SECONDS]);
+  if (matchesMembership(storedClientId ?? undefined, storedConnectionId ?? undefined, clientId, connectionId)) {
+    const commands: unknown[][] = [["EXPIRE", key, ROOM_TTL_SECONDS]];
+    if (storedConnectionId) {
+      commands.push(["EXPIRE", connectionKey, ROOM_TTL_SECONDS]);
+    }
+    await executeRedisPipeline(commands);
   }
 }
 
 const memoryRoomStore: RoomStore = {
-  async emitSignal(roomId, clientId, type, payload) {
+  async emitSignal(roomId, clientId, connectionId, type, payload) {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId);
 
@@ -253,7 +316,7 @@ const memoryRoomStore: RoomStore = {
       return;
     }
 
-    const senderRole = getRoleForClient(room, clientId);
+    const senderRole = getRoleForClient(room, clientId, connectionId);
     if (!senderRole) {
       return;
     }
@@ -269,7 +332,7 @@ const memoryRoomStore: RoomStore = {
     rooms.set(roomId, room);
   },
 
-  async joinRoom(roomId, clientId, preferredRole) {
+  async joinRoom(roomId, clientId, connectionId, preferredRole) {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId) ?? createEmptyRoomState();
 
@@ -282,8 +345,10 @@ const memoryRoomStore: RoomStore = {
       }
 
       room.hostClientId = undefined;
+      room.hostConnectionId = undefined;
       room.hostSharingActive = false;
       room.viewerClientId = clientId;
+      room.viewerConnectionId = connectionId;
       rooms.set(roomId, room);
       return {
         cursor: getLatestEventCursor(room.events),
@@ -303,7 +368,9 @@ const memoryRoomStore: RoomStore = {
       }
 
       room.viewerClientId = undefined;
+      room.viewerConnectionId = undefined;
       room.hostClientId = clientId;
+      room.hostConnectionId = connectionId;
       room.hostSharingActive = false;
       rooms.set(roomId, room);
       return {
@@ -316,6 +383,7 @@ const memoryRoomStore: RoomStore = {
     }
 
     if (room.hostClientId === clientId) {
+      room.hostConnectionId = connectionId;
       rooms.set(roomId, room);
       return {
         cursor: getLatestEventCursor(room.events),
@@ -327,6 +395,7 @@ const memoryRoomStore: RoomStore = {
     }
 
     if (room.viewerClientId === clientId) {
+      room.viewerConnectionId = connectionId;
       if (room.hostClientId) {
         appendUserJoinedEvent(room);
       }
@@ -347,6 +416,11 @@ const memoryRoomStore: RoomStore = {
 
       if (!room[preferredRoleKey]) {
         room[preferredRoleKey] = clientId;
+        if (preferredRole === "host") {
+          room.hostConnectionId = connectionId;
+        } else {
+          room.viewerConnectionId = connectionId;
+        }
         if (preferredRole === "viewer" && room.hostClientId) {
           appendUserJoinedEvent(room);
         }
@@ -369,6 +443,7 @@ const memoryRoomStore: RoomStore = {
 
     if (!room.hostClientId) {
       room.hostClientId = clientId;
+      room.hostConnectionId = connectionId;
       rooms.set(roomId, room);
       return {
         cursor: getLatestEventCursor(room.events),
@@ -381,6 +456,7 @@ const memoryRoomStore: RoomStore = {
 
     if (!room.viewerClientId) {
       room.viewerClientId = clientId;
+      room.viewerConnectionId = connectionId;
       appendUserJoinedEvent(room);
       rooms.set(roomId, room);
       return {
@@ -395,20 +471,21 @@ const memoryRoomStore: RoomStore = {
     return { roomFull: true };
   },
 
-  async leaveRoom(roomId, clientId) {
+  async leaveRoom(roomId, clientId, connectionId) {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId);
     if (!room) {
       return;
     }
 
-    const role = getRoleForClient(room, clientId);
+    const role = getRoleForClient(room, clientId, connectionId);
     if (!role) {
       return;
     }
 
     if (role === "host") {
       room.hostClientId = undefined;
+      room.hostConnectionId = undefined;
       room.hostSharingActive = false;
       if (room.viewerClientId) {
         room.events.push({
@@ -419,6 +496,7 @@ const memoryRoomStore: RoomStore = {
       }
     } else {
       room.viewerClientId = undefined;
+      room.viewerConnectionId = undefined;
       if (room.hostClientId) {
         room.events.push({
           id: room.nextEventId++,
@@ -438,7 +516,7 @@ const memoryRoomStore: RoomStore = {
     rooms.set(roomId, room);
   },
 
-  async pollEvents(roomId, clientId, cursor) {
+  async pollEvents(roomId, clientId, connectionId, cursor) {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId);
 
@@ -446,7 +524,7 @@ const memoryRoomStore: RoomStore = {
       return { events: [], peerPresent: false, sharingActive: false };
     }
 
-    const role = getRoleForClient(room, clientId);
+    const role = getRoleForClient(room, clientId, connectionId);
     if (!role) {
       return { events: [], peerPresent: false, sharingActive: room.hostSharingActive };
     }
@@ -458,10 +536,13 @@ const memoryRoomStore: RoomStore = {
     };
   },
 
-  async setSharingActive(roomId, clientId, active) {
+  async setSharingActive(roomId, clientId, connectionId, active) {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId);
-    if (!room || room.hostClientId !== clientId) {
+    if (
+      !room ||
+      !matchesMembership(room.hostClientId, room.hostConnectionId, clientId, connectionId)
+    ) {
       return;
     }
 
@@ -471,14 +552,14 @@ const memoryRoomStore: RoomStore = {
 };
 
 const redisRoomStore: RoomStore = {
-  async emitSignal(roomId, clientId, type, payload) {
+  async emitSignal(roomId, clientId, connectionId, type, payload) {
     const room = await loadRedisRoomState(roomId);
-    const senderRole = getRoleForClient(room, clientId);
+    const senderRole = getRoleForClient(room, clientId, connectionId);
     if (!senderRole) {
       return;
     }
 
-    await touchRedisMembership(roomId, senderRole, clientId);
+    await touchRedisMembership(roomId, senderRole, clientId, connectionId);
     await pushRedisEvent(roomId, {
       payload,
       to: senderRole === "host" ? "viewer" : "host",
@@ -486,7 +567,7 @@ const redisRoomStore: RoomStore = {
     });
   },
 
-  async joinRoom(roomId, clientId, preferredRole) {
+  async joinRoom(roomId, clientId, connectionId, preferredRole) {
     const prefix = getRoomKeyPrefix(roomId);
     const room = await loadRedisRoomState(roomId);
 
@@ -500,7 +581,9 @@ const redisRoomStore: RoomStore = {
 
       await executeRedisPipeline([
         ["DEL", `${prefix}:host`],
+        ["DEL", getConnectionKey(prefix, "host")],
         ["SET", `${prefix}:viewer`, clientId, "EX", ROOM_TTL_SECONDS],
+        ["SET", getConnectionKey(prefix, "viewer"), connectionId, "EX", ROOM_TTL_SECONDS],
         ["SET", `${prefix}:sharing-active`, "0", "EX", ROOM_TTL_SECONDS],
       ]);
 
@@ -523,7 +606,9 @@ const redisRoomStore: RoomStore = {
 
       await executeRedisPipeline([
         ["DEL", `${prefix}:viewer`],
+        ["DEL", getConnectionKey(prefix, "viewer")],
         ["SET", `${prefix}:host`, clientId, "EX", ROOM_TTL_SECONDS],
+        ["SET", getConnectionKey(prefix, "host"), connectionId, "EX", ROOM_TTL_SECONDS],
         ["SET", `${prefix}:sharing-active`, "0", "EX", ROOM_TTL_SECONDS],
       ]);
 
@@ -547,6 +632,13 @@ const redisRoomStore: RoomStore = {
       ]);
 
       if (preferredSet === "OK") {
+        await executeRedisCommand([
+          "SET",
+          getConnectionKey(prefix, preferredRole),
+          connectionId,
+          "EX",
+          ROOM_TTL_SECONDS,
+        ]);
         if (preferredRole === "viewer") {
           const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
           if (currentHost) {
@@ -572,7 +664,10 @@ const redisRoomStore: RoomStore = {
         `${prefix}:${preferredRole}`,
       ]);
       if (currentPreferred === clientId) {
-        await executeRedisCommand(["EXPIRE", `${prefix}:${preferredRole}`, ROOM_TTL_SECONDS]);
+        await executeRedisPipeline([
+          ["EXPIRE", `${prefix}:${preferredRole}`, ROOM_TTL_SECONDS],
+          ["SET", getConnectionKey(prefix, preferredRole), connectionId, "EX", ROOM_TTL_SECONDS],
+        ]);
         if (preferredRole === "viewer" && room.hostClientId) {
           await pushRedisEvent(roomId, {
             to: "host",
@@ -605,6 +700,13 @@ const redisRoomStore: RoomStore = {
     ]);
 
     if (hostSet === "OK") {
+      await executeRedisCommand([
+        "SET",
+        getConnectionKey(prefix, "host"),
+        connectionId,
+        "EX",
+        ROOM_TTL_SECONDS,
+      ]);
       const refreshedRoom = await loadRedisRoomState(roomId);
       return {
         cursor: getLatestEventCursor(refreshedRoom.events),
@@ -617,7 +719,10 @@ const redisRoomStore: RoomStore = {
 
     const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
     if (currentHost === clientId) {
-      await executeRedisCommand(["EXPIRE", `${prefix}:host`, ROOM_TTL_SECONDS]);
+      await executeRedisPipeline([
+        ["EXPIRE", `${prefix}:host`, ROOM_TTL_SECONDS],
+        ["SET", getConnectionKey(prefix, "host"), connectionId, "EX", ROOM_TTL_SECONDS],
+      ]);
       const refreshedRoom = await loadRedisRoomState(roomId);
       return {
         cursor: getLatestEventCursor(refreshedRoom.events),
@@ -638,6 +743,13 @@ const redisRoomStore: RoomStore = {
     ]);
 
     if (viewerSet === "OK") {
+      await executeRedisCommand([
+        "SET",
+        getConnectionKey(prefix, "viewer"),
+        connectionId,
+        "EX",
+        ROOM_TTL_SECONDS,
+      ]);
       await pushRedisEvent(roomId, {
         to: "host",
         type: "user-joined",
@@ -654,7 +766,10 @@ const redisRoomStore: RoomStore = {
 
     const currentViewer = await executeRedisCommand<string | null>(["GET", `${prefix}:viewer`]);
     if (currentViewer === clientId) {
-      await executeRedisCommand(["EXPIRE", `${prefix}:viewer`, ROOM_TTL_SECONDS]);
+      await executeRedisPipeline([
+        ["EXPIRE", `${prefix}:viewer`, ROOM_TTL_SECONDS],
+        ["SET", getConnectionKey(prefix, "viewer"), connectionId, "EX", ROOM_TTL_SECONDS],
+      ]);
       if (room.hostClientId) {
         await pushRedisEvent(roomId, {
           to: "host",
@@ -674,16 +789,16 @@ const redisRoomStore: RoomStore = {
     return { roomFull: true };
   },
 
-  async leaveRoom(roomId, clientId) {
+  async leaveRoom(roomId, clientId, connectionId) {
     const room = await loadRedisRoomState(roomId);
-    const role = getRoleForClient(room, clientId);
+    const role = getRoleForClient(room, clientId, connectionId);
     if (!role) {
       return;
     }
 
     const prefix = getRoomKeyPrefix(roomId);
     const roleKey = `${prefix}:${role}`;
-    await executeRedisCommand(["DEL", roleKey]);
+    await executeRedisPipeline([["DEL", roleKey], ["DEL", getConnectionKey(prefix, role)]]);
 
     if (role === "host" && room.viewerClientId) {
       await pushRedisEvent(roomId, {
@@ -716,14 +831,14 @@ const redisRoomStore: RoomStore = {
     }
   },
 
-  async pollEvents(roomId, clientId, cursor) {
+  async pollEvents(roomId, clientId, connectionId, cursor) {
     const room = await loadRedisRoomState(roomId);
-    const role = getRoleForClient(room, clientId);
+    const role = getRoleForClient(room, clientId, connectionId);
     if (!role) {
       return { events: [], peerPresent: false, sharingActive: room.hostSharingActive };
     }
 
-    await touchRedisMembership(roomId, role, clientId);
+    await touchRedisMembership(roomId, role, clientId, connectionId);
 
     return {
       events: room.events.filter((event) => event.id > cursor && event.to === role),
@@ -732,13 +847,13 @@ const redisRoomStore: RoomStore = {
     };
   },
 
-  async setSharingActive(roomId, clientId, active) {
-    const prefix = getRoomKeyPrefix(roomId);
-    const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
-    if (currentHost !== clientId) {
+  async setSharingActive(roomId, clientId, connectionId, active) {
+    const room = await loadRedisRoomState(roomId);
+    if (!matchesMembership(room.hostClientId, room.hostConnectionId, clientId, connectionId)) {
       return;
     }
 
+    const prefix = getRoomKeyPrefix(roomId);
     await executeRedisCommand([
       "SET",
       `${prefix}:sharing-active`,

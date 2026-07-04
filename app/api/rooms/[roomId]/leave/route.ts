@@ -3,6 +3,7 @@ import { getRoomStore } from "@/lib/room-store";
 
 type LeaveRequest = {
   clientId?: unknown;
+  connectionId?: unknown;
 };
 
 export async function POST(
@@ -16,6 +17,10 @@ export async function POST(
     return NextResponse.json({ error: "clientId is required" }, { status: 400 });
   }
 
-  await getRoomStore().leaveRoom(roomId, body.clientId);
+  if (typeof body.connectionId !== "string" || !body.connectionId.trim()) {
+    return NextResponse.json({ error: "connectionId is required" }, { status: 400 });
+  }
+
+  await getRoomStore().leaveRoom(roomId, body.clientId, body.connectionId);
   return NextResponse.json({ ok: true });
 }

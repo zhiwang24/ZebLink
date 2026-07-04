@@ -4,6 +4,7 @@ import { getRoomStore } from "@/lib/room-store";
 type SharingRequest = {
   active?: unknown;
   clientId?: unknown;
+  connectionId?: unknown;
 };
 
 export async function POST(
@@ -17,10 +18,14 @@ export async function POST(
     return NextResponse.json({ error: "clientId is required" }, { status: 400 });
   }
 
+  if (typeof body.connectionId !== "string" || !body.connectionId.trim()) {
+    return NextResponse.json({ error: "connectionId is required" }, { status: 400 });
+  }
+
   if (typeof body.active !== "boolean") {
     return NextResponse.json({ error: "active must be a boolean" }, { status: 400 });
   }
 
-  await getRoomStore().setSharingActive(roomId, body.clientId, body.active);
+  await getRoomStore().setSharingActive(roomId, body.clientId, body.connectionId, body.active);
   return NextResponse.json({ ok: true });
 }

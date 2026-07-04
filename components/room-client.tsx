@@ -383,9 +383,9 @@ export function RoomClient({
     getShareProfile(DEFAULT_RESOLUTION_ID, DEFAULT_FRAME_RATE),
   );
   const clientIdRef = useRef<string | null>(null);
+  const connectionIdRef = useRef<string | null>(null);
   const latestEventIdRef = useRef(0);
   const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
-  const disposedRef = useRef(false);
   const lastOutboundStatsRef = useRef<{ bytesSent: number; timestamp: number } | null>(null);
   const lastInboundStatsRef = useRef<{ bytesReceived: number; timestamp: number } | null>(null);
   const negotiationActiveRef = useRef(false);
@@ -455,13 +455,14 @@ export function RoomClient({
     type: Extract<SignalType, "answer" | "ice-candidate" | "offer">,
     payload: RTCIceCandidateInit | RTCSessionDescriptionInit,
   ): Promise<void> => {
-    if (!clientIdRef.current) {
+    if (!clientIdRef.current || !connectionIdRef.current) {
       return;
     }
 
     await requestJson<{ ok: true }>(`/api/rooms/${roomId}/events`, {
       body: JSON.stringify({
         clientId: clientIdRef.current,
+        connectionId: connectionIdRef.current,
         payload,
         type,
       }),
@@ -470,7 +471,7 @@ export function RoomClient({
   };
 
   const postSharingState = async (active: boolean): Promise<void> => {
-    if (!clientIdRef.current) {
+    if (!clientIdRef.current || !connectionIdRef.current) {
       return;
     }
 
@@ -478,6 +479,7 @@ export function RoomClient({
       body: JSON.stringify({
         active,
         clientId: clientIdRef.current,
+        connectionId: connectionIdRef.current,
       }),
       method: "POST",
     });
@@ -891,16 +893,19 @@ export function RoomClient({
       return;
     }
 
-    disposedRef.current = false;
     latestEventIdRef.current = 0;
     clientIdRef.current = getClientId(roomId);
+    const connectionId = crypto.randomUUID();
+    connectionIdRef.current = connectionId;
+    let disposed = false;
 
     async function joinAndPoll(): Promise<void> {
-      while (!disposedRef.current) {
+      while (!disposed) {
         try {
           const joinResult = await requestJson<JoinResponse>(`/api/rooms/${roomId}/join`, {
             body: JSON.stringify({
               clientId: clientIdRef.current,
+              connectionId,
               preferredRole: rolePreference,
             }),
             method: "POST",
@@ -941,10 +946,10 @@ export function RoomClient({
         }
       }
 
-      while (!disposedRef.current && clientIdRef.current) {
+      while (!disposed && clientIdRef.current) {
         try {
           const pollResult = await requestJson<PollResponse>(
-            `/api/rooms/${roomId}/events?clientId=${encodeURIComponent(clientIdRef.current)}&cursor=${latestEventIdRef.current}`,
+            `/api/rooms/${roomId}/events?clientId=${encodeURIComponent(clientIdRef.current)}&connectionId=${encodeURIComponent(connectionId)}&cursor=${latestEventIdRef.current}`,
             {
               method: "GET",
             },
@@ -985,6 +990,7 @@ export function RoomClient({
         `/api/rooms/${roomId}/leave`,
         JSON.stringify({
           clientId,
+          connectionId,
         }),
       );
     };
@@ -992,7 +998,7 @@ export function RoomClient({
     window.addEventListener("pagehide", handlePageHide);
 
     return () => {
-      disposedRef.current = true;
+      disposed = true;
       window.removeEventListener("pagehide", handlePageHide);
 
       const clientId = clientIdRef.current;
@@ -1000,6 +1006,7 @@ export function RoomClient({
         void fetch(`/api/rooms/${roomId}/leave`, {
           body: JSON.stringify({
             clientId,
+            connectionId,
           }),
           headers: {
             "Content-Type": "application/json",
@@ -1014,6 +1021,9 @@ export function RoomClient({
       cleanupPeerConnection();
       stopStream(localStreamRef.current);
       localStreamRef.current = null;
+      if (connectionIdRef.current === connectionId) {
+        connectionIdRef.current = null;
+      }
     };
   }, [rolePreference, roomId]);
 

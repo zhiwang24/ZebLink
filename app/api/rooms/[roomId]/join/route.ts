@@ -3,6 +3,7 @@ import { getRoomStore } from "@/lib/room-store";
 
 type JoinRequest = {
   clientId?: unknown;
+  connectionId?: unknown;
   preferredRole?: unknown;
 };
 
@@ -17,11 +18,20 @@ export async function POST(
     return NextResponse.json({ error: "clientId is required" }, { status: 400 });
   }
 
+  if (typeof body.connectionId !== "string" || !body.connectionId.trim()) {
+    return NextResponse.json({ error: "connectionId is required" }, { status: 400 });
+  }
+
   const preferredRole =
     body.preferredRole === "host" || body.preferredRole === "viewer"
       ? body.preferredRole
       : null;
 
-  const result = await getRoomStore().joinRoom(roomId, body.clientId, preferredRole);
+  const result = await getRoomStore().joinRoom(
+    roomId,
+    body.clientId,
+    body.connectionId,
+    preferredRole,
+  );
   return NextResponse.json(result);
 }

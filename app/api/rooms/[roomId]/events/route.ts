@@ -3,6 +3,7 @@ import { getRoomStore } from "@/lib/room-store";
 
 type EmitEventRequest = {
   clientId?: unknown;
+  connectionId?: unknown;
   payload?: unknown;
   type?: unknown;
 };
@@ -20,17 +21,22 @@ export async function GET(
   const { roomId } = await params;
   const { searchParams } = new URL(request.url);
   const clientId = searchParams.get("clientId");
+  const connectionId = searchParams.get("connectionId");
   const cursor = Number(searchParams.get("cursor") ?? "0");
 
   if (!clientId) {
     return NextResponse.json({ error: "clientId is required" }, { status: 400 });
   }
 
+  if (!connectionId) {
+    return NextResponse.json({ error: "connectionId is required" }, { status: 400 });
+  }
+
   if (Number.isNaN(cursor) || cursor < 0) {
     return NextResponse.json({ error: "cursor must be a positive number" }, { status: 400 });
   }
 
-  const result = await getRoomStore().pollEvents(roomId, clientId, cursor);
+  const result = await getRoomStore().pollEvents(roomId, clientId, connectionId, cursor);
   return NextResponse.json(result);
 }
 
@@ -45,6 +51,10 @@ export async function POST(
     return NextResponse.json({ error: "clientId is required" }, { status: 400 });
   }
 
+  if (typeof body.connectionId !== "string" || !body.connectionId.trim()) {
+    return NextResponse.json({ error: "connectionId is required" }, { status: 400 });
+  }
+
   if (!isSupportedSignalType(body.type)) {
     return NextResponse.json({ error: "Unsupported signal type" }, { status: 400 });
   }
@@ -56,6 +66,7 @@ export async function POST(
   await getRoomStore().emitSignal(
     roomId,
     body.clientId,
+    body.connectionId,
     body.type,
     body.payload as RTCIceCandidateInit | RTCSessionDescriptionInit,
   );
