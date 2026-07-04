@@ -92,6 +92,15 @@ function getLatestEventCursor(events: SignalEvent[]): number {
   return events.length > 0 ? events[events.length - 1].id : 0;
 }
 
+function appendUserJoinedEvent(room: RoomState): void {
+  room.events.push({
+    id: room.nextEventId++,
+    to: "host",
+    type: "user-joined",
+  });
+  room.events = room.events.slice(-MAX_STORED_EVENTS);
+}
+
 function getGlobalMemoryStore(): Map<string, RoomState> {
   const scopedGlobal = globalThis as typeof globalThis & {
     __cozycastRoomStore__?: Map<string, RoomState>;
@@ -318,6 +327,10 @@ const memoryRoomStore: RoomStore = {
     }
 
     if (room.viewerClientId === clientId) {
+      if (room.hostClientId) {
+        appendUserJoinedEvent(room);
+      }
+
       rooms.set(roomId, room);
       return {
         cursor: getLatestEventCursor(room.events),
@@ -335,12 +348,7 @@ const memoryRoomStore: RoomStore = {
       if (!room[preferredRoleKey]) {
         room[preferredRoleKey] = clientId;
         if (preferredRole === "viewer" && room.hostClientId) {
-          room.events.push({
-            id: room.nextEventId++,
-            to: "host",
-            type: "user-joined",
-          });
-          room.events = room.events.slice(-MAX_STORED_EVENTS);
+          appendUserJoinedEvent(room);
         }
 
         rooms.set(roomId, room);
@@ -373,12 +381,7 @@ const memoryRoomStore: RoomStore = {
 
     if (!room.viewerClientId) {
       room.viewerClientId = clientId;
-      room.events.push({
-        id: room.nextEventId++,
-        to: "host",
-        type: "user-joined",
-      });
-      room.events = room.events.slice(-MAX_STORED_EVENTS);
+      appendUserJoinedEvent(room);
       rooms.set(roomId, room);
       return {
         cursor: getLatestEventCursor(room.events),
@@ -554,11 +557,11 @@ const redisRoomStore: RoomStore = {
           }
         }
 
-        const room = await loadRedisRoomState(roomId);
+        const refreshedRoom = await loadRedisRoomState(roomId);
         return {
-          cursor: getLatestEventCursor(room.events),
-          peerPresent: getPeerPresent(room, preferredRole),
-          sharingActive: room.hostSharingActive,
+          cursor: getLatestEventCursor(refreshedRoom.events),
+          peerPresent: getPeerPresent(refreshedRoom, preferredRole),
+          sharingActive: refreshedRoom.hostSharingActive,
           role: preferredRole,
           roomFull: false,
         };
@@ -570,11 +573,17 @@ const redisRoomStore: RoomStore = {
       ]);
       if (currentPreferred === clientId) {
         await executeRedisCommand(["EXPIRE", `${prefix}:${preferredRole}`, ROOM_TTL_SECONDS]);
-        const room = await loadRedisRoomState(roomId);
+        if (preferredRole === "viewer" && room.hostClientId) {
+          await pushRedisEvent(roomId, {
+            to: "host",
+            type: "user-joined",
+          });
+        }
+        const refreshedRoom = await loadRedisRoomState(roomId);
         return {
-          cursor: getLatestEventCursor(room.events),
-          peerPresent: getPeerPresent(room, preferredRole),
-          sharingActive: room.hostSharingActive,
+          cursor: getLatestEventCursor(refreshedRoom.events),
+          peerPresent: getPeerPresent(refreshedRoom, preferredRole),
+          sharingActive: refreshedRoom.hostSharingActive,
           role: preferredRole,
           roomFull: false,
         };
@@ -596,11 +605,11 @@ const redisRoomStore: RoomStore = {
     ]);
 
     if (hostSet === "OK") {
-      const room = await loadRedisRoomState(roomId);
+      const refreshedRoom = await loadRedisRoomState(roomId);
       return {
-        cursor: getLatestEventCursor(room.events),
-        peerPresent: !!room.viewerClientId,
-        sharingActive: room.hostSharingActive,
+        cursor: getLatestEventCursor(refreshedRoom.events),
+        peerPresent: !!refreshedRoom.viewerClientId,
+        sharingActive: refreshedRoom.hostSharingActive,
         role: "host",
         roomFull: false,
       };
@@ -609,11 +618,11 @@ const redisRoomStore: RoomStore = {
     const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
     if (currentHost === clientId) {
       await executeRedisCommand(["EXPIRE", `${prefix}:host`, ROOM_TTL_SECONDS]);
-      const room = await loadRedisRoomState(roomId);
+      const refreshedRoom = await loadRedisRoomState(roomId);
       return {
-        cursor: getLatestEventCursor(room.events),
-        peerPresent: !!room.viewerClientId,
-        sharingActive: room.hostSharingActive,
+        cursor: getLatestEventCursor(refreshedRoom.events),
+        peerPresent: !!refreshedRoom.viewerClientId,
+        sharingActive: refreshedRoom.hostSharingActive,
         role: "host",
         roomFull: false,
       };
@@ -633,11 +642,11 @@ const redisRoomStore: RoomStore = {
         to: "host",
         type: "user-joined",
       });
-      const room = await loadRedisRoomState(roomId);
+      const refreshedRoom = await loadRedisRoomState(roomId);
       return {
-        cursor: getLatestEventCursor(room.events),
+        cursor: getLatestEventCursor(refreshedRoom.events),
         peerPresent: true,
-        sharingActive: room.hostSharingActive,
+        sharingActive: refreshedRoom.hostSharingActive,
         role: "viewer",
         roomFull: false,
       };
@@ -646,11 +655,17 @@ const redisRoomStore: RoomStore = {
     const currentViewer = await executeRedisCommand<string | null>(["GET", `${prefix}:viewer`]);
     if (currentViewer === clientId) {
       await executeRedisCommand(["EXPIRE", `${prefix}:viewer`, ROOM_TTL_SECONDS]);
-      const room = await loadRedisRoomState(roomId);
+      if (room.hostClientId) {
+        await pushRedisEvent(roomId, {
+          to: "host",
+          type: "user-joined",
+        });
+      }
+      const refreshedRoom = await loadRedisRoomState(roomId);
       return {
-        cursor: getLatestEventCursor(room.events),
-        peerPresent: !!room.hostClientId,
-        sharingActive: room.hostSharingActive,
+        cursor: getLatestEventCursor(refreshedRoom.events),
+        peerPresent: !!refreshedRoom.hostClientId,
+        sharingActive: refreshedRoom.hostSharingActive,
         role: "viewer",
         roomFull: false,
       };
