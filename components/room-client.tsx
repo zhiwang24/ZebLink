@@ -523,24 +523,28 @@ export function RoomClient({
 
     peerConnection.ontrack = (event) => {
       const [stream] = event.streams;
-      if (!stream || !remoteVideoRef.current) {
+
+      if (!stream) {
         return;
       }
 
-      remoteStreamRef.current = stream;
-      remoteVideoRef.current.srcObject = stream;
-      void remoteVideoRef.current.play().catch(() => undefined);
-      setRemoteViewing(true);
-      updatePeerPresent(true);
+  remoteStreamRef.current = stream;
+  setRemoteViewing(true);
+  updatePeerPresent(true);
 
-      stream.getTracks().forEach((track) => {
-        track.onended = () => {
-          setRemoteViewing(false);
-          setError(null);
-          resetViewerPlayback();
-        };
-      });
+  if (remoteVideoRef.current) {
+    remoteVideoRef.current.srcObject = stream;
+    void remoteVideoRef.current.play().catch(() => undefined);
+  }
+
+  stream.getTracks().forEach((track) => {
+    track.onended = () => {
+      setRemoteViewing(false);
+      setError(null);
+      resetViewerPlayback();
     };
+  });
+};
 
     peerConnection.oniceconnectionstatechange = () => {
       console.log("ICE state:", peerConnection.iceConnectionState);
@@ -767,6 +771,15 @@ export function RoomClient({
   useEffect(() => {
     syncLocalPreview();
   }, [hostPreviewEnabled, localSharing]);
+
+  useEffect(() => {
+    if (!remoteVideoRef.current || !remoteStreamRef.current) {
+      return;
+    }
+
+    remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    void remoteVideoRef.current.play().catch(() => undefined);
+  }, [remoteViewing]);
 
   useEffect(() => {
     if (!diagnosticsVisible) {
@@ -1039,14 +1052,15 @@ export function RoomClient({
   const showHostScreen = role !== "viewer";
   const showViewerScreen = role === "viewer" || role === null;
   const showHostPreviewVideo = localSharing && (role !== "host" || hostPreviewEnabled);
-  const showViewerVideo = remoteViewing;
-  const viewerToastMessage = !showViewerVideo
-    ? role === "viewer"
+  const showViewerVideo = role === "viewer" || remoteViewing;
+  const viewerToastMessage =
+    role === "viewer" && !remoteViewing
       ? sharingActive
         ? "Your partner is sharing. Connecting the stream..."
         : "Waiting for your partner to start sharing."
-      : "The stream will appear here once sharing starts."
-    : null;
+      : role !== "viewer" && !remoteViewing
+        ? "The stream will appear here once sharing starts."
+        : null;
 
   return (
     <main className="shell">
