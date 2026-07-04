@@ -542,7 +542,17 @@ export function RoomClient({
       });
     };
 
+    peerConnection.oniceconnectionstatechange = () => {
+      console.log("ICE state:", peerConnection.iceConnectionState);
+    };
+
+    peerConnection.onsignalingstatechange = () => {
+      console.log("Signaling state:", peerConnection.signalingState);
+    };
+
     peerConnection.onconnectionstatechange = () => {
+      console.log("Connection state:", peerConnection.connectionState);
+
       const state = peerConnection.connectionState;
 
       if (state === "connected") {
@@ -559,6 +569,7 @@ export function RoomClient({
         if (roleRef.current === "viewer") {
           resetViewerPlayback();
         }
+
         setNegotiationActive(false);
         setError("The peer connection failed. Refresh the hangout and try joining again.");
       }
