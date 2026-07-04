@@ -12,6 +12,7 @@ type SignalEvent = {
 
 type JoinResult =
   | {
+      cursor: number;
       peerPresent: boolean;
       role: RoomRole;
       roomFull: false;
@@ -80,6 +81,10 @@ function createEmptyRoomState(): RoomState {
     events: [],
     nextEventId: 1,
   };
+}
+
+function getLatestEventCursor(events: SignalEvent[]): number {
+  return events.length > 0 ? events[events.length - 1].id : 0;
 }
 
 function getGlobalMemoryStore(): Map<string, RoomState> {
@@ -252,12 +257,22 @@ const memoryRoomStore: RoomStore = {
 
     if (room.hostClientId === clientId) {
       rooms.set(roomId, room);
-      return { peerPresent: !!room.viewerClientId, role: "host", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: !!room.viewerClientId,
+        role: "host",
+        roomFull: false,
+      };
     }
 
     if (room.viewerClientId === clientId) {
       rooms.set(roomId, room);
-      return { peerPresent: !!room.hostClientId, role: "viewer", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: !!room.hostClientId,
+        role: "viewer",
+        roomFull: false,
+      };
     }
 
     if (preferredRole) {
@@ -277,6 +292,7 @@ const memoryRoomStore: RoomStore = {
 
         rooms.set(roomId, room);
         return {
+          cursor: getLatestEventCursor(room.events),
           peerPresent: !!room[peerRoleKey],
           role: preferredRole,
           roomFull: false,
@@ -292,7 +308,12 @@ const memoryRoomStore: RoomStore = {
     if (!room.hostClientId) {
       room.hostClientId = clientId;
       rooms.set(roomId, room);
-      return { peerPresent: !!room.viewerClientId, role: "host", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: !!room.viewerClientId,
+        role: "host",
+        roomFull: false,
+      };
     }
 
     if (!room.viewerClientId) {
@@ -304,7 +325,12 @@ const memoryRoomStore: RoomStore = {
       });
       room.events = room.events.slice(-MAX_STORED_EVENTS);
       rooms.set(roomId, room);
-      return { peerPresent: true, role: "viewer", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: true,
+        role: "viewer",
+        roomFull: false,
+      };
     }
 
     return { roomFull: true };
@@ -414,6 +440,7 @@ const redisRoomStore: RoomStore = {
 
         const room = await loadRedisRoomState(roomId);
         return {
+          cursor: getLatestEventCursor(room.events),
           peerPresent: getPeerPresent(room, preferredRole),
           role: preferredRole,
           roomFull: false,
@@ -428,6 +455,7 @@ const redisRoomStore: RoomStore = {
         await executeRedisCommand(["EXPIRE", `${prefix}:${preferredRole}`, ROOM_TTL_SECONDS]);
         const room = await loadRedisRoomState(roomId);
         return {
+          cursor: getLatestEventCursor(room.events),
           peerPresent: getPeerPresent(room, preferredRole),
           role: preferredRole,
           roomFull: false,
@@ -451,14 +479,24 @@ const redisRoomStore: RoomStore = {
 
     if (hostSet === "OK") {
       const room = await loadRedisRoomState(roomId);
-      return { peerPresent: !!room.viewerClientId, role: "host", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: !!room.viewerClientId,
+        role: "host",
+        roomFull: false,
+      };
     }
 
     const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
     if (currentHost === clientId) {
       await executeRedisCommand(["EXPIRE", `${prefix}:host`, ROOM_TTL_SECONDS]);
       const room = await loadRedisRoomState(roomId);
-      return { peerPresent: !!room.viewerClientId, role: "host", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: !!room.viewerClientId,
+        role: "host",
+        roomFull: false,
+      };
     }
 
     const viewerSet = await executeRedisCommand<string | null>([
@@ -475,14 +513,25 @@ const redisRoomStore: RoomStore = {
         to: "host",
         type: "user-joined",
       });
-      return { peerPresent: true, role: "viewer", roomFull: false };
+      const room = await loadRedisRoomState(roomId);
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: true,
+        role: "viewer",
+        roomFull: false,
+      };
     }
 
     const currentViewer = await executeRedisCommand<string | null>(["GET", `${prefix}:viewer`]);
     if (currentViewer === clientId) {
       await executeRedisCommand(["EXPIRE", `${prefix}:viewer`, ROOM_TTL_SECONDS]);
       const room = await loadRedisRoomState(roomId);
-      return { peerPresent: !!room.hostClientId, role: "viewer", roomFull: false };
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: !!room.hostClientId,
+        role: "viewer",
+        roomFull: false,
+      };
     }
 
     return { roomFull: true };

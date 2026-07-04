@@ -14,6 +14,7 @@ type RoomEvent = {
 
 type JoinResponse =
   | {
+      cursor: number;
       peerPresent: boolean;
       role: Role;
       roomFull: false;
@@ -869,6 +870,7 @@ export function RoomClient({
 
           setRoomFull(false);
           updateSignalingConnected(true);
+          latestEventIdRef.current = joinResult.cursor;
           updateRole(joinResult.role);
           updatePeerPresent(joinResult.peerPresent);
           setError(null);
