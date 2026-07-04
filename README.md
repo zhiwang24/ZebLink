@@ -1,6 +1,6 @@
-# CozyCast
+# ZebLink
 
-CozyCast is a minimal private two-person watch room built with Next.js, TypeScript, and WebRTC. One person creates a room, shares a screen or browser tab with audio, and a second person joins the same URL to watch. The viewer only watches; the media flow is host to viewer.
+ZebLink is a minimal private two-person watch room built with Next.js, TypeScript, and WebRTC. One person creates a room, shares a screen or browser tab with audio, and a second person joins the same URL to watch. The viewer only watches; the media flow is host to viewer.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ npm run dev
 
 The app runs on `http://localhost:3000`.
 
-For local development, CozyCast uses in-memory room state inside the Next.js server process. For Vercel or any multi-instance deployment, copy `.env.example` to `.env.local` and configure both Redis-backed room state and a TURN server.
+For local development, ZebLink uses in-memory room state inside the Next.js server process. For Vercel or any multi-instance deployment, copy `.env.example` to `.env.local` and configure both Redis-backed room state and a TURN server.
 
 ## Available scripts
 
@@ -37,7 +37,7 @@ If a third person opens the same room URL, they receive a room-full message.
 
 ## Vercel deployment
 
-CozyCast is now structured for Vercel:
+ZebLink is now structured for Vercel:
 
 - The frontend and API routes run on Next.js route handlers.
 - Room membership and signaling events use Redis when `KV_REST_API_URL` and `KV_REST_API_TOKEN`, or `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, are configured.
@@ -63,7 +63,7 @@ UPSTASH_REDIS_REST_TOKEN=replace-me
 
 ## TURN configuration
 
-CozyCast now supports custom ICE server configuration so the WebRTC connection can relay through TURN when direct peer-to-peer networking is weak or blocked.
+ZebLink now supports custom ICE server configuration so the WebRTC connection can relay through TURN when direct peer-to-peer networking is weak or blocked.
 
 ### Simple TURN setup
 
@@ -71,7 +71,7 @@ Create `.env.local`:
 
 ```bash
 TURN_URL=turn:turn.example.com:3478
-TURN_USERNAME=cozycast
+TURN_USERNAME=ZebLink
 TURN_CREDENTIAL=replace-me
 ```
 
@@ -82,14 +82,14 @@ This keeps the default Google STUN server and adds your TURN relay.
 If you want to provide multiple STUN/TURN servers, use:
 
 ```bash
-ICE_SERVERS_JSON=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"cozycast","credential":"replace-me"}]
+ICE_SERVERS_JSON=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"ZebLink","credential":"replace-me"}]
 ```
 
-When no TURN config is present, CozyCast falls back to STUN-only direct connectivity.
+When no TURN config is present, ZebLink falls back to STUN-only direct connectivity.
 
-## Quality presets
+## Share controls
 
-The host can choose between `Smooth`, `Balanced`, `Sharp`, and `Max` quality presets before starting a share. `Max` targets up to `3840x2160` at `60fps`, though browsers and displays may clamp the actual capture lower. Changing the preset while sharing updates the active video track and sender parameters on a best-effort basis.
+The host can choose a target resolution and target frame rate before starting a share. The default is `1920x1080` at `60fps`, and the UI also exposes higher frame-rate targets when the browser and display can support them. Changing the controls while sharing updates the active video track and sender parameters on a best-effort basis.
 
 ## How signaling works
 
@@ -123,7 +123,7 @@ lib/
 
 ## Notes
 
-- CozyCast targets exactly two people per room.
-- Screen sharing uses `navigator.mediaDevices.getDisplayMedia(...)` with host-selected quality presets.
+- ZebLink targets exactly two people per room.
+- Screen sharing uses `navigator.mediaDevices.getDisplayMedia(...)` with host-selected resolution and frame-rate targets.
 - STUN defaults to `stun:stun.l.google.com:19302`, and TURN can be added through environment variables.
 - Vercel-compatible deployments should configure Redis-backed room state.
