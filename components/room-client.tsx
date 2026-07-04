@@ -947,6 +947,11 @@ export function RoomClient({
   const showViewerScreen = role === "viewer" || role === null;
   const showHostPreviewVideo = localSharing && (role !== "host" || hostPreviewEnabled);
   const showViewerVideo = remoteViewing;
+  const viewerToastMessage = !showViewerVideo
+    ? role === "viewer"
+      ? "Waiting for your partner to start sharing."
+      : "The stream will appear here once sharing starts."
+    : null;
 
   return (
     <main className="shell">
@@ -1107,17 +1112,11 @@ export function RoomClient({
               <video
                 ref={remoteVideoRef}
                 autoPlay
-                className={`video-frame ${showViewerVideo ? "" : "video-frame-hidden"}`}
+                className="video-frame"
                 controls={role === "viewer"}
                 playsInline
               />
-              {!showViewerVideo ? (
-                <div className="empty-state">
-                  {role === "viewer"
-                    ? "Waiting for your partner to start sharing."
-                    : "Your connected partner will see the stream here after sharing starts."}
-                </div>
-              ) : null}
+              {viewerToastMessage ? <div className="video-toast">{viewerToastMessage}</div> : null}
             </article>
           ) : null}
         </div>
