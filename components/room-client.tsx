@@ -145,8 +145,8 @@ function getDisplayMediaConstraints(profile: ShareProfile): DisplayMediaStreamOp
   };
 }
 
-function getClientStorageKey(roomId: string, rolePreference: Role): string {
-  return `zeblink:client:${roomId}:${rolePreference}`;
+function getClientStorageKey(roomId: string): string {
+  return `zeblink:client:${roomId}`;
 }
 
 function getRolePreferenceStorageKey(roomId: string): string {
@@ -162,8 +162,8 @@ function getStoredRolePreference(roomId: string): Role {
   return storedRolePreference === "viewer" ? "viewer" : "host";
 }
 
-function getClientId(roomId: string, rolePreference: Role): string {
-  const storageKey = getClientStorageKey(roomId, rolePreference);
+function getClientId(roomId: string): string {
+  const storageKey = getClientStorageKey(roomId);
   const existingClientId = window.sessionStorage.getItem(storageKey);
   if (existingClientId) {
     return existingClientId;
@@ -861,7 +861,7 @@ export function RoomClient({
 
     disposedRef.current = false;
     latestEventIdRef.current = 0;
-    clientIdRef.current = getClientId(roomId, rolePreference);
+    clientIdRef.current = getClientId(roomId);
 
     async function joinAndPoll(): Promise<void> {
       while (!disposedRef.current) {

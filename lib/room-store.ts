@@ -264,6 +264,48 @@ const memoryRoomStore: RoomStore = {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId) ?? createEmptyRoomState();
 
+    if (room.hostClientId === clientId && preferredRole === "viewer") {
+      if (room.viewerClientId && room.viewerClientId !== clientId) {
+        return {
+          preferredRoleUnavailable: "viewer",
+          roomFull: false,
+        };
+      }
+
+      room.hostClientId = undefined;
+      room.hostSharingActive = false;
+      room.viewerClientId = clientId;
+      rooms.set(roomId, room);
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: false,
+        sharingActive: room.hostSharingActive,
+        role: "viewer",
+        roomFull: false,
+      };
+    }
+
+    if (room.viewerClientId === clientId && preferredRole === "host") {
+      if (room.hostClientId && room.hostClientId !== clientId) {
+        return {
+          preferredRoleUnavailable: "host",
+          roomFull: false,
+        };
+      }
+
+      room.viewerClientId = undefined;
+      room.hostClientId = clientId;
+      room.hostSharingActive = false;
+      rooms.set(roomId, room);
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: false,
+        sharingActive: room.hostSharingActive,
+        role: "host",
+        roomFull: false,
+      };
+    }
+
     if (room.hostClientId === clientId) {
       rooms.set(roomId, room);
       return {
@@ -443,6 +485,53 @@ const redisRoomStore: RoomStore = {
 
   async joinRoom(roomId, clientId, preferredRole) {
     const prefix = getRoomKeyPrefix(roomId);
+    const room = await loadRedisRoomState(roomId);
+
+    if (room.hostClientId === clientId && preferredRole === "viewer") {
+      if (room.viewerClientId && room.viewerClientId !== clientId) {
+        return {
+          preferredRoleUnavailable: "viewer",
+          roomFull: false,
+        };
+      }
+
+      await executeRedisPipeline([
+        ["DEL", `${prefix}:host`],
+        ["SET", `${prefix}:viewer`, clientId, "EX", ROOM_TTL_SECONDS],
+        ["SET", `${prefix}:sharing-active`, "0", "EX", ROOM_TTL_SECONDS],
+      ]);
+
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: false,
+        sharingActive: false,
+        role: "viewer",
+        roomFull: false,
+      };
+    }
+
+    if (room.viewerClientId === clientId && preferredRole === "host") {
+      if (room.hostClientId && room.hostClientId !== clientId) {
+        return {
+          preferredRoleUnavailable: "host",
+          roomFull: false,
+        };
+      }
+
+      await executeRedisPipeline([
+        ["DEL", `${prefix}:viewer`],
+        ["SET", `${prefix}:host`, clientId, "EX", ROOM_TTL_SECONDS],
+        ["SET", `${prefix}:sharing-active`, "0", "EX", ROOM_TTL_SECONDS],
+      ]);
+
+      return {
+        cursor: getLatestEventCursor(room.events),
+        peerPresent: false,
+        sharingActive: false,
+        role: "host",
+        roomFull: false,
+      };
+    }
 
     if (preferredRole) {
       const preferredSet = await executeRedisCommand<string | null>([
