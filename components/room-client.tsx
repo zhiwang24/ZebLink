@@ -610,7 +610,15 @@ export function RoomClient({
     }
 
     try {
-      stopSharing();
+      cleanupPeerConnection();
+      stopStream(localStreamRef.current);
+      localStreamRef.current = null;
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
+      }
+
+      setLocalSharing(false);
 
       const stream = await navigator.mediaDevices.getDisplayMedia(
         getDisplayMediaConstraints(shareProfileRef.current),
