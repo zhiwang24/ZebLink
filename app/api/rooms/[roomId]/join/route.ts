@@ -3,6 +3,7 @@ import { getRoomStore } from "@/lib/room-store";
 
 type JoinRequest = {
   clientId?: unknown;
+  preferredRole?: unknown;
 };
 
 export async function POST(
@@ -16,6 +17,11 @@ export async function POST(
     return NextResponse.json({ error: "clientId is required" }, { status: 400 });
   }
 
-  const result = await getRoomStore().joinRoom(roomId, body.clientId);
+  const preferredRole =
+    body.preferredRole === "host" || body.preferredRole === "viewer"
+      ? body.preferredRole
+      : null;
+
+  const result = await getRoomStore().joinRoom(roomId, body.clientId, preferredRole);
   return NextResponse.json(result);
 }

@@ -210,6 +210,35 @@ select {
   gap: 12px;
 }
 
+.role-toggle-group {
+  background: rgba(240, 247, 255, 0.04);
+  border: 1px solid rgba(184, 217, 255, 0.08);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 6px;
+  padding: 6px;
+}
+
+.role-toggle-button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  min-height: 40px;
+  padding: 0 16px;
+  transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.role-toggle-button:hover {
+  color: var(--text);
+}
+
+.role-toggle-button-active {
+  background: rgba(99, 179, 255, 0.18);
+  color: var(--text);
+}
+
 .share-link-group {
   align-items: stretch;
 }

@@ -1,4 +1,5 @@
 type RoomRole = "host" | "viewer";
+type PreferredRoomRole = RoomRole | null;
 
 type SignalEventType = "answer" | "ice-candidate" | "offer" | "user-joined" | "user-left";
 
@@ -13,6 +14,10 @@ type JoinResult =
   | {
       peerPresent: boolean;
       role: RoomRole;
+      roomFull: false;
+    }
+  | {
+      preferredRoleUnavailable: RoomRole;
       roomFull: false;
     }
   | {
@@ -38,13 +43,21 @@ type RoomStore = {
     type: Exclude<SignalEventType, "user-joined" | "user-left">,
     payload: RTCIceCandidateInit | RTCSessionDescriptionInit,
   ) => Promise<void>;
-  joinRoom: (roomId: string, clientId: string) => Promise<JoinResult>;
+  joinRoom: (
+    roomId: string,
+    clientId: string,
+    preferredRole: PreferredRoomRole,
+  ) => Promise<JoinResult>;
   leaveRoom: (roomId: string, clientId: string) => Promise<void>;
   pollEvents: (roomId: string, clientId: string, cursor: number) => Promise<PollResult>;
 };
 
 const ROOM_TTL_SECONDS = 60 * 15;
 const MAX_STORED_EVENTS = 200;
+
+function getPeerRole(role: RoomRole): RoomRole {
+  return role === "host" ? "viewer" : "host";
+}
 
 function getRoleForClient(state: RoomState, clientId: string): RoomRole | null {
   if (state.hostClientId === clientId) {
@@ -233,7 +246,7 @@ const memoryRoomStore: RoomStore = {
     rooms.set(roomId, room);
   },
 
-  async joinRoom(roomId, clientId) {
+  async joinRoom(roomId, clientId, preferredRole) {
     const rooms = getGlobalMemoryStore();
     const room = rooms.get(roomId) ?? createEmptyRoomState();
 
@@ -245,6 +258,35 @@ const memoryRoomStore: RoomStore = {
     if (room.viewerClientId === clientId) {
       rooms.set(roomId, room);
       return { peerPresent: !!room.hostClientId, role: "viewer", roomFull: false };
+    }
+
+    if (preferredRole) {
+      const preferredRoleKey = preferredRole === "host" ? "hostClientId" : "viewerClientId";
+      const peerRoleKey = preferredRole === "host" ? "viewerClientId" : "hostClientId";
+
+      if (!room[preferredRoleKey]) {
+        room[preferredRoleKey] = clientId;
+        if (preferredRole === "viewer" && room.hostClientId) {
+          room.events.push({
+            id: room.nextEventId++,
+            to: "host",
+            type: "user-joined",
+          });
+          room.events = room.events.slice(-MAX_STORED_EVENTS);
+        }
+
+        rooms.set(roomId, room);
+        return {
+          peerPresent: !!room[peerRoleKey],
+          role: preferredRole,
+          roomFull: false,
+        };
+      }
+
+      return {
+        preferredRoleUnavailable: preferredRole,
+        roomFull: false,
+      };
     }
 
     if (!room.hostClientId) {
@@ -346,8 +388,58 @@ const redisRoomStore: RoomStore = {
     });
   },
 
-  async joinRoom(roomId, clientId) {
+  async joinRoom(roomId, clientId, preferredRole) {
     const prefix = getRoomKeyPrefix(roomId);
+
+    if (preferredRole) {
+      const preferredSet = await executeRedisCommand<string | null>([
+        "SET",
+        `${prefix}:${preferredRole}`,
+        clientId,
+        "EX",
+        ROOM_TTL_SECONDS,
+        "NX",
+      ]);
+
+      if (preferredSet === "OK") {
+        if (preferredRole === "viewer") {
+          const currentHost = await executeRedisCommand<string | null>(["GET", `${prefix}:host`]);
+          if (currentHost) {
+            await pushRedisEvent(roomId, {
+              to: "host",
+              type: "user-joined",
+            });
+          }
+        }
+
+        const room = await loadRedisRoomState(roomId);
+        return {
+          peerPresent: getPeerPresent(room, preferredRole),
+          role: preferredRole,
+          roomFull: false,
+        };
+      }
+
+      const currentPreferred = await executeRedisCommand<string | null>([
+        "GET",
+        `${prefix}:${preferredRole}`,
+      ]);
+      if (currentPreferred === clientId) {
+        await executeRedisCommand(["EXPIRE", `${prefix}:${preferredRole}`, ROOM_TTL_SECONDS]);
+        const room = await loadRedisRoomState(roomId);
+        return {
+          peerPresent: getPeerPresent(room, preferredRole),
+          role: preferredRole,
+          roomFull: false,
+        };
+      }
+
+      return {
+        preferredRoleUnavailable: preferredRole,
+        roomFull: false,
+      };
+    }
+
     const hostSet = await executeRedisCommand<string | null>([
       "SET",
       `${prefix}:host`,

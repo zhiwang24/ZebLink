@@ -19,6 +19,10 @@ type JoinResponse =
       roomFull: false;
     }
   | {
+      preferredRoleUnavailable: Role;
+      roomFull: false;
+    }
+  | {
       roomFull: true;
     };
 
@@ -138,12 +142,25 @@ function getDisplayMediaConstraints(profile: ShareProfile): DisplayMediaStreamOp
   };
 }
 
-function getClientStorageKey(roomId: string): string {
-  return `zeblink:client:${roomId}`;
+function getClientStorageKey(roomId: string, rolePreference: Role): string {
+  return `zeblink:client:${roomId}:${rolePreference}`;
 }
 
-function getClientId(roomId: string): string {
-  const storageKey = getClientStorageKey(roomId);
+function getRolePreferenceStorageKey(roomId: string): string {
+  return `zeblink:role:${roomId}`;
+}
+
+function getStoredRolePreference(roomId: string): Role {
+  if (typeof window === "undefined") {
+    return "host";
+  }
+
+  const storedRolePreference = window.sessionStorage.getItem(getRolePreferenceStorageKey(roomId));
+  return storedRolePreference === "viewer" ? "viewer" : "host";
+}
+
+function getClientId(roomId: string, rolePreference: Role): string {
+  const storageKey = getClientStorageKey(roomId, rolePreference);
   const existingClientId = window.sessionStorage.getItem(storageKey);
   if (existingClientId) {
     return existingClientId;
@@ -343,6 +360,7 @@ export function RoomClient({
   const [roomFull, setRoomFull] = useState(false);
   const [browserSupported, setBrowserSupported] = useState(true);
   const [signalingConnected, setSignalingConnected] = useState(false);
+  const [rolePreference, setRolePreference] = useState<Role>(() => getStoredRolePreference(roomId));
   const [selectedResolutionId, setSelectedResolutionId] =
     useState<ResolutionOptionId>(DEFAULT_RESOLUTION_ID);
   const [selectedFrameRate, setSelectedFrameRate] = useState(DEFAULT_FRAME_RATE);
@@ -808,13 +826,15 @@ export function RoomClient({
 
     setBrowserSupported(supported);
     setShareUrl(window.location.href);
+    window.sessionStorage.setItem(getRolePreferenceStorageKey(roomId), rolePreference);
 
     if (!supported) {
       return;
     }
 
     disposedRef.current = false;
-    clientIdRef.current = getClientId(roomId);
+    latestEventIdRef.current = 0;
+    clientIdRef.current = getClientId(roomId, rolePreference);
 
     async function joinAndPoll(): Promise<void> {
       while (!disposedRef.current) {
@@ -822,6 +842,7 @@ export function RoomClient({
           const joinResult = await requestJson<JoinResponse>(`/api/rooms/${roomId}/join`, {
             body: JSON.stringify({
               clientId: clientIdRef.current,
+              preferredRole: rolePreference,
             }),
             method: "POST",
           });
@@ -830,6 +851,19 @@ export function RoomClient({
             setRoomFull(true);
             setError("This hangout already has two people. Ask your partner for a new link.");
             updateSignalingConnected(true);
+            return;
+          }
+
+          if ("preferredRoleUnavailable" in joinResult) {
+            setRoomFull(false);
+            updateSignalingConnected(true);
+            updateRole(null);
+            updatePeerPresent(true);
+            setError(
+              joinResult.preferredRoleUnavailable === "host"
+                ? "The sharer slot is already taken. Switch to Watcher to join this hangout."
+                : "The watcher slot is already taken. Switch to Sharer or use a new hangout link.",
+            );
             return;
           }
 
@@ -913,11 +947,12 @@ export function RoomClient({
         }).catch(() => undefined);
       }
 
+      setLocalSharing(false);
       cleanupPeerConnection();
       stopStream(localStreamRef.current);
       localStreamRef.current = null;
     };
-  }, [roomId]);
+  }, [rolePreference, roomId]);
 
   const status = useMemo(() => {
     if (roomFull) {
@@ -928,12 +963,16 @@ export function RoomClient({
       return "Connecting to hangout";
     }
 
+    if (role === "host" && localSharing) {
+      return peerPresent ? "Sharing live" : "Sharing, waiting for watcher";
+    }
+
     if (role === "viewer" && remoteViewing) {
       return "Watching live";
     }
 
-    if (role === "host" && localSharing && peerPresent) {
-      return "Sharing live";
+    if (role === "viewer" && peerPresent) {
+      return "Connected, waiting for share";
     }
 
     if (!peerPresent) {
@@ -1002,6 +1041,32 @@ export function RoomClient({
           <div className="info-tile">
             <span className="tile-label">Sharing</span>
             <strong>{localSharing || remoteViewing ? "Live" : "Idle"}</strong>
+          </div>
+        </div>
+
+        <div className="share-row">
+          <label className="share-label">Join as</label>
+          <div className="role-toggle-group" role="tablist" aria-label="Join role">
+            <button
+              aria-pressed={rolePreference === "host"}
+              className={`role-toggle-button ${rolePreference === "host" ? "role-toggle-button-active" : ""}`}
+              onClick={() => {
+                setRolePreference("host");
+              }}
+              type="button"
+            >
+              Sharer
+            </button>
+            <button
+              aria-pressed={rolePreference === "viewer"}
+              className={`role-toggle-button ${rolePreference === "viewer" ? "role-toggle-button-active" : ""}`}
+              onClick={() => {
+                setRolePreference("viewer");
+              }}
+              type="button"
+            >
+              Watcher
+            </button>
           </div>
         </div>
 
@@ -1124,13 +1189,13 @@ export function RoomClient({
         <div className="actions">
           <button
             className="primary-button"
-            disabled={role !== "host" || roomFull || !browserSupported}
+            disabled={role !== "host" || roomFull || !browserSupported || localSharing}
             onClick={() => {
               void startSharing();
             }}
             type="button"
           >
-            Start Sharing
+            {localSharing ? "Sharing" : "Start Sharing"}
           </button>
           <button
             className="secondary-button"
